@@ -12,9 +12,11 @@ Everything user-facing (channel links, button labels, messages) lives in config.
 If config.json does not exist, a default one is written on first run.
 """
 
+import hashlib
 import html
 import json
 import logging
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -23,7 +25,10 @@ from telegram import (
     BotCommand,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
     Update,
+    WebAppInfo,
 )
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -51,12 +56,14 @@ DEFAULT_CONFIG = {
     "admin_ids": [123456789],
     "target_channel": "@your_channel",
     "database_file": "bot.db",
+    "webapp_url": "",
     "links": [
         {"label": "📢 My Channel", "url": "https://t.me/your_channel"},
         {"label": "💬 My Group", "url": "https://t.me/your_group"},
         {"label": "🌐 Website", "url": "https://example.com"},
     ],
     "buttons": {
+        "open_app": "🚀 Open",
         "send_anonymous": "✉️ Send anonymous message",
         "answer": "✍️ Answer",
         "show_user": "👤 Show user details",
@@ -85,6 +92,9 @@ DEFAULT_CONFIG = {
         "cancelled": "🚫 Cancelled.",
         "nothing_to_cancel": "Nothing to cancel.",
         "message_not_found": "⚠️ Message not found.",
+        "webapp_page_title": "Bot is ready",
+        "webapp_page_text": "✅ The bot is awake. You can go back and send your message.",
+        "webapp_page_button": "Back to chat",
     },
     "commands": {
         "start": "Start the bot",
@@ -116,9 +126,32 @@ def load_config() -> dict:
 
 
 CFG = load_config()
+
+
+def apply_env_overrides(cfg: dict) -> None:
+    """Environment variables (e.g. on Render) override values in config.json."""
+    if os.getenv("BOT_TOKEN"):
+        cfg["bot_token"] = os.environ["BOT_TOKEN"]
+    if os.getenv("ADMIN_IDS"):
+        cfg["admin_ids"] = [int(x) for x in os.environ["ADMIN_IDS"].replace(";", ",").split(",") if x.strip()]
+    if os.getenv("TARGET_CHANNEL"):
+        cfg["target_channel"] = os.environ["TARGET_CHANNEL"]
+    if os.getenv("DATABASE_FILE"):
+        cfg["database_file"] = os.environ["DATABASE_FILE"]
+    if os.getenv("WEBAPP_URL"):
+        cfg["webapp_url"] = os.environ["WEBAPP_URL"]
+
+
+apply_env_overrides(CFG)
 MSG = CFG["messages"]
 BTN = CFG["buttons"]
 ADMIN_IDS = {int(x) for x in CFG["admin_ids"]}
+
+# Webhook settings (Render sets RENDER_EXTERNAL_URL and PORT automatically)
+WEBHOOK_URL = (os.getenv("WEBHOOK_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/")
+PORT = int(os.getenv("PORT", "10000"))
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET") or hashlib.sha256(CFG["bot_token"].encode()).hexdigest()[:32]
+WEBAPP_URL = CFG["webapp_url"] or WEBHOOK_URL  # the persistent button opens this
 
 
 def is_admin(user_id: int) -> bool:
@@ -186,6 +219,18 @@ def links_keyboard(include_anon: bool = True) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+def persistent_keyboard() -> ReplyKeyboardMarkup | None:
+    """Always-visible button under the text field that opens WEBAPP_URL in a web view.
+    Telegram requires an https:// URL for web-app buttons."""
+    if not WEBAPP_URL.startswith("https://"):
+        return None
+    return ReplyKeyboardMarkup(
+        [[KeyboardButton(BTN["open_app"], web_app=WebAppInfo(url=WEBAPP_URL))]],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
 def inbox_item_keyboard(msg_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
@@ -230,7 +275,12 @@ def fmt_preview(row: sqlite3.Row, answer: str, template: str) -> str:
 # User commands
 # --------------------------------------------------------------------------- #
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(MSG["welcome"], reply_markup=links_keyboard())
+    kb = persistent_keyboard()
+    if kb:
+        await update.message.reply_text(MSG["welcome"], reply_markup=kb)
+        await update.message.reply_text(MSG["links_intro"], reply_markup=links_keyboard())
+    else:
+        await update.message.reply_text(MSG["welcome"], reply_markup=links_keyboard())
     if is_admin(update.effective_user.id):
         await update.message.reply_text(MSG["admin_help"])
 
@@ -241,14 +291,14 @@ async def cmd_links(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def cmd_anon(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["anon_mode"] = True
-    await update.message.reply_text(MSG["anon_prompt"])
+    await update.message.reply_text(MSG["anon_prompt"], reply_markup=persistent_keyboard())
 
 
 async def cb_anon(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     context.user_data["anon_mode"] = True
-    await query.message.reply_text(MSG["anon_prompt"])
+    await query.message.reply_text(MSG["anon_prompt"], reply_markup=persistent_keyboard())
 
 
 # --------------------------------------------------------------------------- #
@@ -373,7 +423,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # ---- normal user: store as anonymous message --------------------------
     context.user_data.pop("anon_mode", None)
     msg_id = DBASE.add(user.id, user.username, user.full_name, text)
-    await update.message.reply_text(MSG["anon_received"])
+    await update.message.reply_text(MSG["anon_received"], reply_markup=persistent_keyboard())
 
     row = DBASE.get(msg_id)
     for admin_id in ADMIN_IDS:
@@ -419,14 +469,90 @@ def build_app() -> Application:
     return app
 
 
+WEBAPP_PAGE = """<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title}</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+ body{{font-family:-apple-system,system-ui,sans-serif;display:flex;min-height:100vh;margin:0;
+      align-items:center;justify-content:center;text-align:center;padding:24px;
+      background:var(--tg-theme-bg-color,#fff);color:var(--tg-theme-text-color,#111)}}
+ button{{margin-top:24px;padding:12px 24px;border:0;border-radius:10px;font-size:16px;
+      background:var(--tg-theme-button-color,#2ea6ff);color:var(--tg-theme-button-text-color,#fff)}}
+</style></head>
+<body><div><h2>{title}</h2><p>{text}</p>
+<button onclick="Telegram.WebApp.close()">{button}</button></div>
+<script>Telegram.WebApp.ready();Telegram.WebApp.expand();</script>
+</body></html>"""
+
+
+def run_webhook(app: Application) -> None:
+    """Serve the bot over HTTP (needed on Render). Routes:
+       GET  /                   -> small page for the web-view button (also wakes the service)
+       GET  /health             -> 200 ok
+       POST /webhook/<secret>   -> Telegram updates"""
+    import asyncio
+
+    import uvicorn
+    from starlette.applications import Starlette
+    from starlette.requests import Request
+    from starlette.responses import HTMLResponse, PlainTextResponse, Response
+    from starlette.routing import Route
+
+    async def index(_: Request) -> Response:
+        return HTMLResponse(
+            WEBAPP_PAGE.format(
+                title=html.escape(MSG["webapp_page_title"]),
+                text=html.escape(MSG["webapp_page_text"]),
+                button=html.escape(MSG["webapp_page_button"]),
+            )
+        )
+
+    async def health(_: Request) -> Response:
+        return PlainTextResponse("ok")
+
+    async def telegram(request: Request) -> Response:
+        if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET:
+            return Response(status_code=403)
+        await app.update_queue.put(Update.de_json(await request.json(), app.bot))
+        return Response()
+
+    web = Starlette(
+        routes=[
+            Route("/", index),
+            Route("/health", health),
+            Route(f"/webhook/{WEBHOOK_SECRET}", telegram, methods=["POST"]),
+        ]
+    )
+    server = uvicorn.Server(uvicorn.Config(web, host="0.0.0.0", port=PORT, log_level="info"))
+
+    async def serve() -> None:
+        async with app:
+            await app.bot.set_webhook(
+                url=f"{WEBHOOK_URL}/webhook/{WEBHOOK_SECRET}",
+                secret_token=WEBHOOK_SECRET,
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=False,
+            )
+            await app.start()
+            log.info("Webhook set to %s, listening on port %s", WEBHOOK_URL, PORT)
+            await server.serve()
+            await app.stop()
+
+    asyncio.run(serve())
+
+
 def main() -> None:
     if CFG["bot_token"] == "PUT_YOUR_BOT_TOKEN_HERE":
-        raise SystemExit("Edit config.json and set your bot_token first.")
+        raise SystemExit("Set BOT_TOKEN env var or bot_token in config.json first.")
     if ADMIN_IDS == {123456789}:
-        log.warning("admin_ids still has the placeholder value – set your own Telegram user id.")
+        log.warning("admin_ids still has the placeholder value – set ADMIN_IDS.")
     app = build_app()
-    log.info("Bot started")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    if WEBHOOK_URL:
+        run_webhook(app)
+    else:
+        log.info("No WEBHOOK_URL/RENDER_EXTERNAL_URL set – running in polling mode")
+        app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
