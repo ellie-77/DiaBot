@@ -1,0 +1,63 @@
+{
+  "bot_token": "PUT_YOUR_BOT_TOKEN_HERE",
+  "admin_ids": [],
+  "target_channel": "",
+  "database_file": "bot.db",
+  "webapp_url": "",
+  "links": [
+    {
+      "label": "📢 My Channel",
+      "url": "https://t.me/your_channel"
+    },
+    {
+      "label": "💬 My Group",
+      "url": "https://t.me/your_group"
+    },
+    {
+      "label": "🌐 Website",
+      "url": "https://example.com"
+    }
+  ],
+  "buttons": {
+    "open_app": "🚀 Open",
+    "send_anonymous": "✉️ Send anonymous message",
+    "answer": "✍️ Answer",
+    "show_user": "👤 Show user details",
+    "push_to_channel": "📤 Publish to channel",
+    "edit_text": "✏️ Edit text",
+    "cancel": "❌ Cancel"
+  },
+  "messages": {
+    "welcome": "👋 Welcome!\n\nUse the buttons below to visit my channels, or send me an anonymous message.",
+    "links_intro": "🔗 Here are my channels and groups:",
+    "anon_prompt": "✍️ Write your message now. It will be delivered anonymously.",
+    "anon_received": "✅ Your message has been received. Thank you!",
+    "text_only": "⚠️ Only text messages are supported right now.",
+    "not_admin": "⛔ This command is for admins only.",
+    "admin_help": "🛠 Admin commands:\n/inbox — show new anonymous messages\n/cancel — cancel the current action",
+    "inbox_empty": "📭 Inbox is empty — no new messages.",
+    "inbox_header": "📥 You have {count} new message(s):",
+    "inbox_item": "📨 Message #{id}\n🕒 {date}\n\n{text}",
+    "new_message_alert": "🔔 New anonymous message!\n\n📨 Message #{id}\n🕒 {date}\n\n{text}",
+    "user_details": "👤 User details for message #{id}\n\nID: <code>{user_id}</code>\nUsername: {username}\nName: {full_name}",
+    "ask_answer": "✍️ Write your answer to message #{id}:",
+    "preview": "<blockquote>{user_text}</blockquote>\n\n{answer}",
+    "channel_post": "<blockquote>{user_text}</blockquote>\n\n{answer}",
+    "pushed": "✅ Published to channel.",
+    "push_failed": "❌ Could not post to channel: {error}",
+    "cancelled": "🚫 Cancelled.",
+    "nothing_to_cancel": "Nothing to cancel.",
+    "message_not_found": "⚠️ Message not found.",
+    "webapp_page_title": "Bot is ready",
+    "webapp_page_text": "✅ The bot is awake. You can go back and send your message.",
+    "webapp_page_button": "Back to chat",
+    "no_channel": "⚠️ No channel configured yet. Set TARGET_CHANNEL and the answer will be published there."
+  },
+  "commands": {
+    "start": "Start the bot",
+    "links": "Show my channels and groups",
+    "anon": "Send an anonymous message",
+    "inbox": "(admin) Show new messages",
+    "cancel": "(admin) Cancel current action"
+  }
+}
