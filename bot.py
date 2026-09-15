@@ -17,6 +17,7 @@ import html
 import json
 import logging
 import os
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -67,7 +68,7 @@ DEFAULT_CONFIG = {
         "send_anonymous": "✉️ Send anonymous message",
         "answer": "✍️ Answer",
         "show_user": "👤 Show user details",
-        "push_to_channel": "📤 Push to channel",
+        "push_to_channel": "📤 Publish to channel",
         "edit_text": "✏️ Edit text",
         "cancel": "❌ Cancel",
     },
@@ -87,12 +88,12 @@ DEFAULT_CONFIG = {
         "ask_answer": "✍️ Write your answer to message #{id}:",
         "preview": "<blockquote>{user_text}</blockquote>\n\n{answer}",
         "channel_post": "<blockquote>{user_text}</blockquote>\n\n{answer}",
-        "pushed": "✅ Pushed to channel.",
+        "pushed": "✅ Published to channel.",
         "push_failed": "❌ Could not post to channel: {error}",
         "cancelled": "🚫 Cancelled.",
         "nothing_to_cancel": "Nothing to cancel.",
         "message_not_found": "⚠️ Message not found.",
-        "no_channel": "⚠️ No target channel configured (set TARGET_CHANNEL).",
+        "no_channel": "⚠️ No channel configured yet. Set TARGET_CHANNEL and the answer will be published there.",
         "webapp_page_title": "Bot is ready",
         "webapp_page_text": "✅ The bot is awake. You can go back and send your message.",
         "webapp_page_button": "Back to chat",
@@ -141,6 +142,24 @@ def apply_env_overrides(cfg: dict) -> None:
         cfg["database_file"] = os.environ["DATABASE_FILE"]
     if os.getenv("WEBAPP_URL"):
         cfg["webapp_url"] = os.environ["WEBAPP_URL"]
+
+    # One env var per channel button: CHANNEL_1="Label|https://t.me/xxx", CHANNEL_2=...
+    # If any are set they replace the "links" list from config.json.
+    env_links = []
+    for name, value in sorted(
+        ((k, v) for k, v in os.environ.items() if re.fullmatch(r"CHANNEL_\d+", k)),
+        key=lambda kv: int(kv[0].split("_")[1]),
+    ):
+        label, sep, url = value.partition("|")
+        if not sep:  # no label given -> use the URL as label
+            label, url = value, value
+        label, url = label.strip(), url.strip()
+        if url:
+            env_links.append({"label": label or url, "url": url})
+        else:
+            log.warning("%s is set but has no URL (expected 'Label|URL')", name)
+    if env_links:
+        cfg["links"] = env_links
 
 
 apply_env_overrides(CFG)
@@ -246,11 +265,17 @@ def inbox_item_keyboard(msg_id: int) -> InlineKeyboardMarkup:
 
 
 def preview_keyboard(msg_id: int) -> InlineKeyboardMarkup:
-    row = []
-    if TARGET_CHANNEL:  # only offer "push" when a channel is configured
-        row.append(InlineKeyboardButton(BTN["push_to_channel"], callback_data=f"push:{msg_id}"))
-    row.append(InlineKeyboardButton(BTN["edit_text"], callback_data=f"edit:{msg_id}"))
-    return InlineKeyboardMarkup([row, [InlineKeyboardButton(BTN["cancel"], callback_data="cancel")]])
+    # "Publish to channel" is always shown; if TARGET_CHANNEL is not set yet,
+    # pressing it replies with MSG["no_channel"].
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(BTN["push_to_channel"], callback_data=f"push:{msg_id}"),
+                InlineKeyboardButton(BTN["edit_text"], callback_data=f"edit:{msg_id}"),
+            ],
+            [InlineKeyboardButton(BTN["cancel"], callback_data="cancel")],
+        ]
+    )
 
 
 def cancel_keyboard() -> InlineKeyboardMarkup:
@@ -550,7 +575,7 @@ def main() -> None:
     if OPEN_MODE:
         log.warning("ADMIN_IDS not set – OPEN MODE: every user can use /inbox and see user details!")
     if not TARGET_CHANNEL:
-        log.info("TARGET_CHANNEL not set – 'Push to channel' button disabled")
+        log.info("TARGET_CHANNEL not set – 'Publish to channel' will ask you to configure it")
     app = build_app()
     if WEBHOOK_URL:
         run_webhook(app)
