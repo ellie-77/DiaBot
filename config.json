@@ -34,7 +34,6 @@
     "anon_received": "✅ Your message has been received. Thank you!",
     "text_only": "⚠️ Only text messages are supported right now.",
     "not_admin": "⛔ This command is for admins only.",
-    "admin_help": "🛠 Admin commands:\n/inbox — show new anonymous messages\n/cancel — cancel the current action",
     "inbox_empty": "📭 Inbox is empty — no new messages.",
     "inbox_header": "📥 You have {count} new message(s):",
     "inbox_item": "📨 Message #{id}\n🕒 {date}\n\n{text}",
@@ -57,7 +56,7 @@
     "start": "Start the bot",
     "links": "Show my channels and groups",
     "anon": "Send an anonymous message",
-    "inbox": "(admin) Show new messages",
-    "cancel": "(admin) Cancel current action"
+    "inbox": "Show new anonymous messages",
+    "cancel": "Cancel the current action"
   }
 }
