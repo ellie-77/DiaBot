@@ -66,7 +66,10 @@ DEFAULT_CONFIG = {
     ],
     "buttons": {
         "open_app": "🚀 Open",
+        "links": "🔗 Links",
         "send_anonymous": "✉️ Send anonymous message",
+        "inbox": "📥 Inbox",
+        "start": "🔄 Start",
         "answer": "✍️ Answer",
         "show_user": "👤 Show user details",
         "push_to_channel": "📤 Publish to channel",
@@ -233,23 +236,27 @@ DBASE = DB(str(BASE_DIR / CFG["database_file"]))
 # --------------------------------------------------------------------------- #
 # Keyboards
 # --------------------------------------------------------------------------- #
-def links_keyboard(include_anon: bool = True) -> InlineKeyboardMarkup:
+def links_keyboard(user_id: int | None = None) -> InlineKeyboardMarkup:
+    """Inline buttons: channel links + send-anonymous (+ inbox for admins)."""
     rows = [[InlineKeyboardButton(link["label"], url=link["url"])] for link in CFG["links"]]
-    if include_anon:
-        rows.append([InlineKeyboardButton(BTN["send_anonymous"], callback_data="anon")])
+    rows.append([InlineKeyboardButton(BTN["send_anonymous"], callback_data="anon")])
+    if user_id is not None and is_admin(user_id):
+        rows.append([InlineKeyboardButton(BTN["inbox"], callback_data="inbox")])
     return InlineKeyboardMarkup(rows)
 
 
-def persistent_keyboard() -> ReplyKeyboardMarkup | None:
-    """Always-visible button under the text field that opens WEBAPP_URL in a web view.
-    Telegram requires an https:// URL for web-app buttons."""
-    if not WEBAPP_URL.startswith("https://"):
-        return None
-    return ReplyKeyboardMarkup(
-        [[KeyboardButton(BTN["open_app"], web_app=WebAppInfo(url=WEBAPP_URL))]],
-        resize_keyboard=True,
-        is_persistent=True,
-    )
+def persistent_keyboard(user_id: int) -> ReplyKeyboardMarkup:
+    """Always-visible menu under the text field. Reply-keyboard buttons send their label
+    as a message, which on_text recognises. The web-app button opens WEBAPP_URL in a web view
+    (Telegram requires https:// for that)."""
+    rows = []
+    if WEBAPP_URL.startswith("https://"):
+        rows.append([KeyboardButton(BTN["open_app"], web_app=WebAppInfo(url=WEBAPP_URL))])
+    rows.append([KeyboardButton(BTN["links"]), KeyboardButton(BTN["send_anonymous"])])
+    if is_admin(user_id):
+        rows.append([KeyboardButton(BTN["inbox"])])
+    rows.append([KeyboardButton(BTN["start"]), KeyboardButton(BTN["cancel"])])
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True)
 
 
 def inbox_item_keyboard(msg_id: int) -> InlineKeyboardMarkup:
@@ -298,58 +305,73 @@ def fmt_preview(row: sqlite3.Row, answer: str, template: str) -> str:
 # User commands
 # --------------------------------------------------------------------------- #
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    kb = persistent_keyboard()
-    if kb:
-        await update.message.reply_text(MSG["welcome"], reply_markup=kb)
-        await update.message.reply_text(MSG["links_intro"], reply_markup=links_keyboard())
-    else:
-        await update.message.reply_text(MSG["welcome"], reply_markup=links_keyboard())
+    uid = update.effective_user.id
+    context.user_data.clear()
+    await update.message.reply_text(MSG["welcome"], reply_markup=persistent_keyboard(uid))
+    await update.message.reply_text(MSG["links_intro"], reply_markup=links_keyboard(uid))
 
 
 async def cmd_links(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(MSG["links_intro"], reply_markup=links_keyboard())
+    await update.message.reply_text(
+        MSG["links_intro"], reply_markup=links_keyboard(update.effective_user.id)
+    )
 
 
 async def cmd_anon(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["anon_mode"] = True
-    await update.message.reply_text(MSG["anon_prompt"], reply_markup=persistent_keyboard())
+    await update.message.reply_text(
+        MSG["anon_prompt"], reply_markup=persistent_keyboard(update.effective_user.id)
+    )
 
 
 async def cb_anon(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     context.user_data["anon_mode"] = True
-    await query.message.reply_text(MSG["anon_prompt"], reply_markup=persistent_keyboard())
+    await query.message.reply_text(
+        MSG["anon_prompt"], reply_markup=persistent_keyboard(query.from_user.id)
+    )
+
+
+async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Works for everyone: aborts a pending answer (admin) or anonymous message (user)."""
+    had_answer = context.user_data.pop("answer_for", None) is not None
+    had_anon = context.user_data.pop("anon_mode", None) is not None
+    text = MSG["cancelled"] if (had_answer or had_anon) else MSG["nothing_to_cancel"]
+    await update.message.reply_text(
+        text, reply_markup=persistent_keyboard(update.effective_user.id)
+    )
 
 
 # --------------------------------------------------------------------------- #
 # Admin commands
 # --------------------------------------------------------------------------- #
-async def cmd_inbox(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text(MSG["not_admin"])
+async def send_inbox(message, user_id: int) -> None:
+    """Send the inbox (new messages) to `message.chat`; admin only."""
+    if not is_admin(user_id):
+        await message.reply_text(MSG["not_admin"])
         return
     rows = DBASE.new_messages()
     if not rows:
-        await update.message.reply_text(MSG["inbox_empty"])
+        await message.reply_text(MSG["inbox_empty"])
         return
-    await update.message.reply_text(MSG["inbox_header"].format(count=len(rows)))
+    await message.reply_text(MSG["inbox_header"].format(count=len(rows)))
     for row in rows:
-        await update.message.reply_text(
+        await message.reply_text(
             fmt_item(row, MSG["inbox_item"]),
             reply_markup=inbox_item_keyboard(row["id"]),
             parse_mode=ParseMode.HTML,
         )
 
 
-async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text(MSG["not_admin"])
-        return
-    if context.user_data.pop("answer_for", None) is not None:
-        await update.message.reply_text(MSG["cancelled"])
-    else:
-        await update.message.reply_text(MSG["nothing_to_cancel"])
+async def cmd_inbox(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await send_inbox(update.message, update.effective_user.id)
+
+
+async def cb_inbox(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    await send_inbox(query.message, query.from_user.id)
 
 
 # --------------------------------------------------------------------------- #
@@ -424,6 +446,18 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     text = update.message.text
 
+    # ---- persistent menu buttons (they arrive as plain text) --------------
+    menu = {
+        BTN["start"]: cmd_start,
+        BTN["links"]: cmd_links,
+        BTN["send_anonymous"]: cmd_anon,
+        BTN["cancel"]: cmd_cancel,
+        BTN["inbox"]: cmd_inbox,
+    }
+    if text in menu:
+        await menu[text](update, context)
+        return
+
     # ---- admin writing an answer ------------------------------------------
     if is_admin(user.id) and context.user_data.get("answer_for") is not None:
         msg_id = context.user_data.pop("answer_for")
@@ -442,7 +476,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # ---- normal user: store as anonymous message --------------------------
     context.user_data.pop("anon_mode", None)
     msg_id = DBASE.add(user.id, user.username, user.full_name, text)
-    await update.message.reply_text(MSG["anon_received"], reply_markup=persistent_keyboard())
+    await update.message.reply_text(MSG["anon_received"], reply_markup=persistent_keyboard(user.id))
 
     row = DBASE.get(msg_id)
     for admin_id in ADMIN_IDS:
@@ -464,7 +498,7 @@ async def on_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 # --------------------------------------------------------------------------- #
 # App setup
 # --------------------------------------------------------------------------- #
-ADMIN_COMMANDS = {"inbox", "cancel"}
+ADMIN_COMMANDS = {"inbox"}
 
 
 async def post_init(app: Application) -> None:
@@ -490,6 +524,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("cancel", cmd_cancel, private))
 
     app.add_handler(CallbackQueryHandler(cb_anon, pattern=r"^anon$"))
+    app.add_handler(CallbackQueryHandler(cb_inbox, pattern=r"^inbox$"))
     app.add_handler(CallbackQueryHandler(cb_admin, pattern=r"^(ans|usr|push|edit):\d+$|^cancel$"))
 
     app.add_handler(MessageHandler(private & filters.TEXT & ~filters.COMMAND, on_text))
