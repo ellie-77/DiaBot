@@ -6,20 +6,16 @@
   "webapp_url": "",
   "links": [
     {
-      "label": "📢 My Channel",
-      "url": "https://t.me/your_channel"
+      "label": "📢 adrift",
+      "url": "t.me/dianeviss"
     },
     {
       "label": "💬 My Group",
       "url": "https://t.me/your_group"
-    },
-    {
-      "label": "🌐 Website",
-      "url": "https://example.com"
     }
   ],
   "buttons": {
-    "open_app": "🚀 Open",
+    "open_app": "🚀 activate server",
     "send_anonymous": "✉️ Send anonymous message",
     "answer": "✍️ Answer",
     "show_user": "👤 Show user details",
