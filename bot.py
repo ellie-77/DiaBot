@@ -53,8 +53,8 @@ CONFIG_PATH = BASE_DIR / "config.json"
 # --------------------------------------------------------------------------- #
 DEFAULT_CONFIG = {
     "bot_token": "PUT_YOUR_BOT_TOKEN_HERE",
-    "admin_ids": [123456789],
-    "target_channel": "@your_channel",
+    "admin_ids": [],
+    "target_channel": "",
     "database_file": "bot.db",
     "webapp_url": "",
     "links": [
@@ -92,6 +92,7 @@ DEFAULT_CONFIG = {
         "cancelled": "🚫 Cancelled.",
         "nothing_to_cancel": "Nothing to cancel.",
         "message_not_found": "⚠️ Message not found.",
+        "no_channel": "⚠️ No target channel configured (set TARGET_CHANNEL).",
         "webapp_page_title": "Bot is ready",
         "webapp_page_text": "✅ The bot is awake. You can go back and send your message.",
         "webapp_page_button": "Back to chat",
@@ -146,6 +147,8 @@ apply_env_overrides(CFG)
 MSG = CFG["messages"]
 BTN = CFG["buttons"]
 ADMIN_IDS = {int(x) for x in CFG["admin_ids"]}
+OPEN_MODE = not ADMIN_IDS  # no admins configured -> everyone can use admin features
+TARGET_CHANNEL = (CFG.get("target_channel") or "").strip()
 
 # Webhook settings (Render sets RENDER_EXTERNAL_URL and PORT automatically)
 WEBHOOK_URL = (os.getenv("WEBHOOK_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/")
@@ -155,7 +158,7 @@ WEBAPP_URL = CFG["webapp_url"] or WEBHOOK_URL  # the persistent button opens thi
 
 
 def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
+    return OPEN_MODE or user_id in ADMIN_IDS
 
 
 # --------------------------------------------------------------------------- #
@@ -243,15 +246,11 @@ def inbox_item_keyboard(msg_id: int) -> InlineKeyboardMarkup:
 
 
 def preview_keyboard(msg_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(BTN["push_to_channel"], callback_data=f"push:{msg_id}"),
-                InlineKeyboardButton(BTN["edit_text"], callback_data=f"edit:{msg_id}"),
-            ],
-            [InlineKeyboardButton(BTN["cancel"], callback_data="cancel")],
-        ]
-    )
+    row = []
+    if TARGET_CHANNEL:  # only offer "push" when a channel is configured
+        row.append(InlineKeyboardButton(BTN["push_to_channel"], callback_data=f"push:{msg_id}"))
+    row.append(InlineKeyboardButton(BTN["edit_text"], callback_data=f"edit:{msg_id}"))
+    return InlineKeyboardMarkup([row, [InlineKeyboardButton(BTN["cancel"], callback_data="cancel")]])
 
 
 def cancel_keyboard() -> InlineKeyboardMarkup:
@@ -375,12 +374,15 @@ async def cb_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     elif action == "push":
         answer = row["answer"]
+        if not TARGET_CHANNEL:
+            await query.message.reply_text(MSG["no_channel"])
+            return
         if not answer:
             await query.message.reply_text(MSG["message_not_found"])
             return
         try:
             await context.bot.send_message(
-                chat_id=CFG["target_channel"],
+                chat_id=TARGET_CHANNEL,
                 text=fmt_preview(row, answer, MSG["channel_post"]),
                 parse_mode=ParseMode.HTML,
             )
@@ -415,8 +417,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    # ---- admin idle: show help -------------------------------------------
-    if is_admin(user.id):
+    # ---- real admin idle: show help (in open mode everyone can still send) --
+    if not OPEN_MODE and is_admin(user.id):
         await update.message.reply_text(MSG["admin_help"])
         return
 
@@ -426,7 +428,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(MSG["anon_received"], reply_markup=persistent_keyboard())
 
     row = DBASE.get(msg_id)
-    for admin_id in ADMIN_IDS:
+    for admin_id in ADMIN_IDS:  # empty in open mode -> use /inbox instead
         try:
             await context.bot.send_message(
                 chat_id=admin_id,
@@ -545,8 +547,10 @@ def run_webhook(app: Application) -> None:
 def main() -> None:
     if CFG["bot_token"] == "PUT_YOUR_BOT_TOKEN_HERE":
         raise SystemExit("Set BOT_TOKEN env var or bot_token in config.json first.")
-    if ADMIN_IDS == {123456789}:
-        log.warning("admin_ids still has the placeholder value – set ADMIN_IDS.")
+    if OPEN_MODE:
+        log.warning("ADMIN_IDS not set – OPEN MODE: every user can use /inbox and see user details!")
+    if not TARGET_CHANNEL:
+        log.info("TARGET_CHANNEL not set – 'Push to channel' button disabled")
     app = build_app()
     if WEBHOOK_URL:
         run_webhook(app)
