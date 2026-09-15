@@ -24,6 +24,7 @@ from pathlib import Path
 
 from telegram import (
     BotCommand,
+    BotCommandScopeChat,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
@@ -79,7 +80,6 @@ DEFAULT_CONFIG = {
         "anon_received": "✅ Your message has been received. Thank you!",
         "text_only": "⚠️ Only text messages are supported right now.",
         "not_admin": "⛔ This command is for admins only.",
-        "admin_help": "🛠 Admin commands:\n/inbox — show new anonymous messages\n/cancel — cancel the current action",
         "inbox_empty": "📭 Inbox is empty — no new messages.",
         "inbox_header": "📥 You have {count} new message(s):",
         "inbox_item": "📨 Message #{id}\n🕒 {date}\n\n{text}",
@@ -102,8 +102,8 @@ DEFAULT_CONFIG = {
         "start": "Start the bot",
         "links": "Show my channels and groups",
         "anon": "Send an anonymous message",
-        "inbox": "(admin) Show new messages",
-        "cancel": "(admin) Cancel current action",
+        "inbox": "Show new anonymous messages",
+        "cancel": "Cancel the current action",
     },
 }
 
@@ -166,7 +166,6 @@ apply_env_overrides(CFG)
 MSG = CFG["messages"]
 BTN = CFG["buttons"]
 ADMIN_IDS = {int(x) for x in CFG["admin_ids"]}
-OPEN_MODE = not ADMIN_IDS  # no admins configured -> everyone can use admin features
 TARGET_CHANNEL = (CFG.get("target_channel") or "").strip()
 
 # Webhook settings (Render sets RENDER_EXTERNAL_URL and PORT automatically)
@@ -177,7 +176,7 @@ WEBAPP_URL = CFG["webapp_url"] or WEBHOOK_URL  # the persistent button opens thi
 
 
 def is_admin(user_id: int) -> bool:
-    return OPEN_MODE or user_id in ADMIN_IDS
+    return user_id in ADMIN_IDS
 
 
 # --------------------------------------------------------------------------- #
@@ -305,8 +304,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(MSG["links_intro"], reply_markup=links_keyboard())
     else:
         await update.message.reply_text(MSG["welcome"], reply_markup=links_keyboard())
-    if is_admin(update.effective_user.id):
-        await update.message.reply_text(MSG["admin_help"])
 
 
 async def cmd_links(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -442,18 +439,13 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    # ---- real admin idle: show help (in open mode everyone can still send) --
-    if not OPEN_MODE and is_admin(user.id):
-        await update.message.reply_text(MSG["admin_help"])
-        return
-
     # ---- normal user: store as anonymous message --------------------------
     context.user_data.pop("anon_mode", None)
     msg_id = DBASE.add(user.id, user.username, user.full_name, text)
     await update.message.reply_text(MSG["anon_received"], reply_markup=persistent_keyboard())
 
     row = DBASE.get(msg_id)
-    for admin_id in ADMIN_IDS:  # empty in open mode -> use /inbox instead
+    for admin_id in ADMIN_IDS:
         try:
             await context.bot.send_message(
                 chat_id=admin_id,
@@ -472,10 +464,19 @@ async def on_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 # --------------------------------------------------------------------------- #
 # App setup
 # --------------------------------------------------------------------------- #
+ADMIN_COMMANDS = {"inbox", "cancel"}
+
+
 async def post_init(app: Application) -> None:
-    await app.bot.set_my_commands(
-        [BotCommand(name, desc) for name, desc in CFG["commands"].items()]
-    )
+    """Everyone sees the public commands in the menu; admins additionally see /inbox and /cancel."""
+    public = [BotCommand(n, d) for n, d in CFG["commands"].items() if n not in ADMIN_COMMANDS]
+    admin = [BotCommand(n, d) for n, d in CFG["commands"].items()]
+    await app.bot.set_my_commands(public)
+    for admin_id in ADMIN_IDS:
+        try:
+            await app.bot.set_my_commands(admin, scope=BotCommandScopeChat(chat_id=admin_id))
+        except Exception:  # noqa: BLE001  (admin has not started the bot yet)
+            log.warning("Could not set admin commands for %s (start the bot with that account first)", admin_id)
 
 
 def build_app() -> Application:
@@ -572,8 +573,8 @@ def run_webhook(app: Application) -> None:
 def main() -> None:
     if CFG["bot_token"] == "PUT_YOUR_BOT_TOKEN_HERE":
         raise SystemExit("Set BOT_TOKEN env var or bot_token in config.json first.")
-    if OPEN_MODE:
-        log.warning("ADMIN_IDS not set – OPEN MODE: every user can use /inbox and see user details!")
+    if not ADMIN_IDS:
+        log.warning("ADMIN_IDS not set – nobody can access the inbox until you set it")
     if not TARGET_CHANNEL:
         log.info("TARGET_CHANNEL not set – 'Publish to channel' will ask you to configure it")
     app = build_app()
